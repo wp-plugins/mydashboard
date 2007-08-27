@@ -3,7 +3,7 @@
 Plugin Name: MyDashboard
 Plugin URI: http://dev.clearskys.net/Wordpress/MyDashboard
 Description: This plugin provides a replacement ajax based Dashboard for WordPress.
-Version: 0.2.5
+Version: 0.2.6
 Author: clearskys.net
 Author URI: http://blog.clearskys.net
 */
@@ -97,14 +97,43 @@ class CSMyDashboard {
 		
 	}
 	
+	function ajax_nonce_pass($nonce, $action = -1) {
+		$adminurl = strtolower(get_option('siteurl')).'/wp-admin';
+		$referer = strtolower(wp_get_referer());
+		
+		if (!(-1 == $action && strpos($referer, $adminurl) !== false)) {
+			return true;
+			
+			// The lines below are skipped for the moment as I need to work out
+			// how to create a nonce in javascript.
+			// So for the moment, only the refering page is checked.
+			/*
+			$user = wp_get_current_user();
+			$uid = (int) $user->id;
+		
+			$i = ceil(time() / 43200);
+		
+			//Allow for expanding range, but only do one check if we can
+			if( substr(wp_hash($i . $action . $uid), -12, 10) == $nonce || substr(wp_hash(($i - 1) . $action . $uid), -12, 10) == $nonce )
+				return true;
+			return false;
+			*/
+		}	else {
+			return false;
+		}
+	}
+	
 	function handle_ajax() {
 		// This function receives all ajax calls for the gadgets, and passes them off
 		// to the relevant user functions
 		if($this->onpage('wp-admin/index.php') && $this->xss_clean($_GET['call']) == '_ajax' && function_exists('current_user_can') && current_user_can('edit_posts')) {
 			
+			if(function_exists('check_admin_referer') && !$this->ajax_nonce_pass('clearskys_dashboard_ajax',$_REQUEST['_wpnonce'])) {
+				exit();
+			}
+			
 			$mdp = get_option("clearskys_dashboard_pages");
 			$this->load_stored_gadgets();
-			
 			
 			switch($this->xss_clean($_GET['action'])) {
 				case "updatecontent":
@@ -690,6 +719,11 @@ class CSMyDashboard {
 		
 		echo '<div class="myboxedit">';
 		echo '<form action="index.php" method="post" name="' . $name . '_form" class="myboxeditform">';
+		
+		if(function_exists('wp_nonce_field')) {
+			wp_nonce_field('clearskys_gadget_update_' . $name);
+		}
+		
 		echo $editresults;
 		echo '</form>';
 		echo '</div>';
@@ -938,6 +972,10 @@ class CSMyDashboard {
 		
 		//print_r($md);
 		if($this->xss_clean($_POST['submitted']) == 'yes') {
+			
+			if(function_exists('check_admin_referer')) {
+				check_admin_referer('clearskys_dashboard_options');
+			}
 			if($this->xss_clean($_POST['show_original']) != $md['show_original']) {
 				$md['show_original'] = $this->xss_clean($_POST['show_original']);
 			}
@@ -952,7 +990,11 @@ class CSMyDashboard {
 		echo "<h2>My Dashboard settings</h2>";
 		?>
 		<form method="post" id="mydashform">	
-		
+			<?php
+			if(function_exists('wp_nonce_field')) {
+				wp_nonce_field('clearskys_dashboard_options');
+			}
+			?>
 			<p class="submit"><input type="submit" name="Submit" value="Update Settings &raquo;" />
 		
 			<fieldset class="options">
@@ -1290,15 +1332,15 @@ class CSMyDashboard {
 		}
 		
 		function is_malicious($input) {
-		$is_m = false;
-		$bad_inputs = array("\r", "\n", "mime-version", "content-type", "cc:", "to:");
-		foreach($bad_inputs as $bad_input) {
-			if(strpos(strtolower($input), strtolower($bad_input)) !== false) {
-				$is_m = true; break;
+			$is_m = false;
+			$bad_inputs = array("\r", "\n", "mime-version", "content-type", "cc:", "to:");
+			foreach($bad_inputs as $bad_input) {
+				if(strpos(strtolower($input), strtolower($bad_input)) !== false) {
+					$is_m = true; break;
+				}
 			}
+			return $is_m;
 		}
-		return $is_m;
-	}
 }
 
 function register_mydashboard_gadget($name, $options = array(), $type = 'standard') {
