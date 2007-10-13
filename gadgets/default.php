@@ -22,6 +22,26 @@ require_once(ABSPATH . WPINC . '/rss.php');
 
     return rtrim($matches[0]) . $end_char;
 }
+
+$rss_feed = apply_filters( 'dashboard_incoming_links_feed', 'http://blogsearch.google.com/blogsearch_feeds?hl=en&scoring=d&ie=utf-8&output=rss&partner=wordpress&q=link:' . trailingslashit( get_option('home') ) );
+$more_link = apply_filters( 'dashboard_incoming_links_link', 'http://blogsearch.google.com/blogsearch?hl=en&scoring=d&partner=wordpress&q=link:' . trailingslashit( get_option('home') ) );
+
+function mydash_create_google_incoming_links_feed($args = false) {
+	// Creates the feed to get the technorati incoming links
+	if(!isset($args['name'])) $args['name'] = "mydash_google_incoming_links";
+	$mydash_i = get_option($args['name']);
+	if(!isset($mydash_i['feed_uri'])) {
+		// default settings not set up so create them
+		$mydash_i['link_title'] = 'Google Blog Search Reactions';
+		$mydash_i['feed_uri'] = 'http://blogsearch.google.com/blogsearch_feeds?hl=en&scoring=d&ie=utf-8&output=rss&partner=wordpress&q=link:' . trailingslashit( get_option('home'));
+		$mydash_i['link_uri'] = 'http://blogsearch.google.com/blogsearch?hl=en&scoring=d&partner=wordpress&q=link:' . trailingslashit( get_option('home') );
+		$mydash_i['item_template'] = '<a href="{link}">{title}</a>';
+		$mydash_i['numitems'] = 10;
+		update_option($args['name'],$mydash_i);
+	}
+	return true;
+}
+
  
 function mydash_create_incoming_links_feed($args = false) {
 	// Creates the feed to get the technorati incoming links
@@ -29,7 +49,7 @@ function mydash_create_incoming_links_feed($args = false) {
 	$mydash_i = get_option($args['name']);
 	if(!isset($mydash_i['feed_uri'])) {
 		// default settings not set up so create them
-		$mydash_i['link_title'] = 'Incoming Links';
+		$mydash_i['link_title'] = 'Technorati Reactions';
 		$mydash_i['feed_uri'] = 'http://feeds.technorati.com/cosmos/rss/?url='. trailingslashit(get_option('home')) .'&partner=wordpress';
 		$mydash_i['link_uri'] = 'http://www.technorati.com/search/' . trailingslashit(get_option('home')) . '?partner=wordpress';
 		$mydash_i['item_template'] = '<a href="{link}">{title}</a>';
@@ -293,7 +313,8 @@ function mydash_display_latest_comments($args = false) {
 			$commentlink = "<a href='" . $comment->comment_author_url . "'>" . $comment->comment_author . "</a>";
 		}
 		echo '<li>' . sprintf(__('%1$s on %2$s'), $commentlink, '<a href="'. get_permalink($comment->comment_post_ID) . '#comment-' . $comment->comment_ID . '">' . apply_filters('the_title', get_the_title($comment->comment_post_ID)) . '</a>');
-		edit_comment_link(__("Edit"), ' <small>(', ')</small>');
+		//edit_comment_link(__("Edit"), ' <small>(', ')</small>');
+		echo ' <a href="comment.php?action=editcomment&c='.$comment->comment_ID.'"><small>('._("Edit").')</small></a>';
 		echo '</li>';
 	}
 	}
@@ -365,18 +386,36 @@ function mydash_edit_blog_statistics($args = false) {
 
 function mydash_display_blog_statistics($args = false) {
 	global $wpdb;
-	
+
 	$mytitle = __('Blog Stats');
-	
+
 	$numposts = (int) $wpdb->get_var("SELECT COUNT(*) FROM $wpdb->posts WHERE post_type = 'post' AND post_status = 'publish'");
-	$numcomms = (int) $wpdb->get_var("SELECT COUNT(*) FROM $wpdb->comments WHERE comment_approved = '1'");
-	$numcats  = (int) $wpdb->get_var("SELECT COUNT(*) FROM $wpdb->categories");
+	$numcomms = (int) $wpdb->get_var("SELECT COUNT(*) FROM $wpdb->comments WHERE comment_approved = '1' AND comment_type NOT LIKE '%back%'");
 	
+	// Check for WordPress version here
+	if(get_bloginfo('version') >= "2.3") {
+		$numcats  = wp_count_terms('category');
+		$numtags = wp_count_terms('post_tag');
+	} else {
+		$numcats  = (int) $wpdb->get_var("SELECT COUNT(*) FROM $wpdb->categories");
+	}
+	
+	$numpings = (int) $wpdb->get_var("SELECT COUNT(*) FROM $wpdb->comments WHERE comment_approved = '1' AND comment_type = 'pingback'");
+	$numtracks = (int) $wpdb->get_var("SELECT COUNT(*) FROM $wpdb->comments WHERE comment_approved = '1' AND comment_type = 'trackback'");
+
 	$post_str = sprintf(__ngettext('%1$s <a href="%2$s" title="Posts">post</a>', '%1$s <a href="%2$s" title="Posts">posts</a>', $numposts), number_format($numposts), 'edit.php');
 	$comm_str = sprintf(__ngettext('%1$s <a href="%2$s" title="Comments">comment</a>', '%1$s <a href="%2$s" title="Comments">comments</a>', $numcomms), number_format($numcomms), 'edit-comments.php');
 	$cat_str  = sprintf(__ngettext('%1$s <a href="%2$s" title="Categories">category</a>', '%1$s <a href="%2$s" title="Categories">categories</a>', $numcats), number_format($numcats), 'categories.php');
 	
-	$mycontent = '<p>' . sprintf(__('There are currently %1$s and %2$s, contained within %3$s.'), $post_str, $comm_str, $cat_str) . '</p>';
+	if(get_bloginfo('version') >= "2.3") {
+		$tag_str  = sprintf(__ngettext(' and %1$s tag', ' and %1$s tags', $numtags), number_format($numtags));
+	} else {
+		$tag_str = "";
+	}
+	$trackback_str = sprintf(__ngettext('%1$s trackback', '%1$s trackbacks', $numtracks), number_format($numtracks));
+	$pingback_str = sprintf(__ngettext('%1$s pingback', '%1$s pingbacks', $numpings), number_format($numpings));
+	
+	$mycontent = '<p>' . sprintf(__('There are currently %1$s, %2$s, %3$s and %4$s, contained within %5$s%6$s.'), $post_str, $comm_str, $trackback_str, $pingback_str, $cat_str, $tag_str) . '</p>';
 
 	return array('title' => $mytitle, 'content' => $mycontent);
 }
@@ -517,6 +556,22 @@ function mydash_register_defaults() {
 								'authorlink' => 'http://www.clearskys.net'
 								);
 	register_mydashboard_gadget('mydash_blog_statistics', $statsoptions);
+
+	
+	// Google Blog Search Reactions
+	$googlestatsoptions = array(	'id' => 'mydash_google_incoming_links',
+								'title' => 'RSS Feed',
+								'createcallback' => 'mydash_create_google_incoming_links_feed',
+								'editcallback' => 'mydash_edit_lockedfeed_gadget',
+								'contentcallback' => 'mydash_display_feed_gadget',
+								'allowmultiple' => false,
+								'fulltitle' => 'Google Blog Search Reactions',
+								'description' => 'Standard Google Blog Search Reactions dashboard gadget',
+								//'icon' => $base_uri . 'images/technorati_32x32.png',
+								'authorlink' => 'http://rick.jinlabs.com'
+								);
+	register_mydashboard_gadget('mydash_google_incoming_links', $googlestatsoptions);
+	
 	
 	// Incoming links RSS feed gadget
 	$statsoptions = array(	'id' => 'mydash_incoming_links',
@@ -525,8 +580,8 @@ function mydash_register_defaults() {
 								'editcallback' => 'mydash_edit_lockedfeed_gadget',
 								'contentcallback' => 'mydash_display_feed_gadget',
 								'allowmultiple' => false,
-								'fulltitle' => 'Wordpress Incoming links Feed',
-								'description' => 'Standard blog incoming links dashboard gadget',
+								'fulltitle' => 'Technorati Reactions',
+								'description' => 'Standard Technorati Reactions dashboard gadget',
 								'icon' => $base_uri . 'images/technorati_32x32.png',
 								'authorlink' => 'http://www.clearskys.net'
 								);

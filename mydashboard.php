@@ -3,7 +3,7 @@
 Plugin Name: MyDashboard
 Plugin URI: http://dev.clearskys.net/Wordpress/MyDashboard
 Description: This plugin provides a replacement ajax based Dashboard for WordPress.
-Version: 0.2.6
+Version: 0.3.1
 Author: clearskys.net
 Author URI: http://blog.clearskys.net
 */
@@ -23,7 +23,7 @@ Author URI: http://blog.clearskys.net
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 */
 
-
+require_once('includes/core/cscore.php');
 // include the default gadgets
 include_once('gadgets/default.php');
 
@@ -31,9 +31,9 @@ define('MYDPLUGINPATH', (DIRECTORY_SEPARATOR != '/') ? str_replace(DIRECTORY_SEP
 
 global $CSmydash;
 
-class CSMyDashboard {
+class CSMyDashboard Extends CSCore {
 	
-	var $build = '5';
+	var $build = '7';
 	var $localqueue = array();
 	var $base_uri = '';
 	var $mylocation = '';
@@ -44,11 +44,14 @@ class CSMyDashboard {
 	var $pages = array();
 	var $columns = array();
 	
+	var $uid = 0;
+	
 	function CSMyDashboard() {
+		
 		// grab the configuration settings
-		$md = get_option("clearskys_dashboard_config");
 		$site_uri = get_settings('siteurl');
 		
+		//print_r($md);
 		// Add the installation and uninstallation hooks 
 		
 		$directories = explode(DIRECTORY_SEPARATOR,MYDPLUGINPATH);
@@ -57,9 +60,12 @@ class CSMyDashboard {
 		
 		$this->base_uri = $site_uri . '/wp-content/plugins/' . $mydir . '/';
 		
+		
+		
 		register_activation_hook(__FILE__, array(&$this, 'install')); 
 		register_deactivation_hook(__FILE__, array(&$this, 'uninstall'));
 		
+		add_action('init', array(&$this,'plugin_init'), 1);
 		add_action('init', array(&$this,'gadgets_init'), 1);
 		add_action('init',array(&$this,'enqueue_dependancies'));
 		add_action('init',array(&$this,'handle_ajax'));
@@ -67,33 +73,75 @@ class CSMyDashboard {
 		add_action('admin_menu', array(&$this,"add_admin_pages"));
 		add_action('admin_head',array(&$this,'show_header'));
 		
-		if($md['show_original'] == '0') {
-			add_action('init',array(&$this,'redirect_index'));
-			add_action('admin_head',array(&$this,'steal_dashboardmenu'));
-		}
+		add_action('init',array(&$this,'redirect_index'));
+			
+		add_action('admin_head',array(&$this,'steal_dashboardmenu'));
+		
 		
 	}
 	
 	function install() {
 		
-		$md = get_option("clearskys_dashboard_config");
-		if(!isset($md['build']) || $md['build'] < $this->build) {
-			// The options aren't set so set up the defaults here
-			$md['build'] = $this->build;
-			$md['show_original'] = 0;
-			
-			$md['layout']['columns'] = 3;
-			$md['layout']['style'] = 'even';
-			
-			$md['skin'] = "default";
-			
-			$md['defaultpage'] = "page-1";
-			
-		}
-		update_option("clearskys_dashboard_config",$md);
+		
 	}
 	
 	function uninstall() {
+		
+	}
+	
+	function getpluginoptions() {
+		if($this->uid == 0) {
+			$this->plugin_init();
+		} 
+		
+		$md = get_option("clearskys_dashboard_config");
+		
+		if(empty($md) || !isset($md['build']) || $md['build'] < $this->build) {
+			// The options aren't set so set up the defaults here
+			$uid = $this->uid;
+			$mdp = get_option("clearskys_dashboard_pages");
+			if(!isset($md[$uid]['defaultpage']) && isset($md['defaultpage'])) {
+				// Transfer existing dashboard to a multi user format
+				if(isset($mdp['page-1'])) {
+					$mdp[$uid]['page-1'] = $mdp['page-1'];
+					unset($mdp['page-1']);
+					update_option("clearskys_dashboard_pages",$mdp);
+				}
+				$md[$uid]['defaultpage'] = $md['defaultpage'];
+				$md[$uid]['skin'] = $md['skin'];
+				$md[$uid]['show_original'] = $md['show_original'];
+			
+				$md[$uid]['layout']['columns'] = $md['layout']['columns'];
+				$md[$uid]['layout']['style'] = $md['layout']['style'];
+				
+				unset($md['defaultpage']);
+				unset($md['skin']);
+				unset($md['show_original']);
+				unset($md['layout']);
+				
+			} elseif(!isset($md['defaultpage'])) {
+				$md[$uid]['skin'] = "default";
+				$md[$uid]['show_original'] = 0;
+			
+				$md[$uid]['layout']['columns'] = 3;
+				$md[$uid]['layout']['style'] = 'even';
+				$md[$uid]['defaultpage'] = "page-1";
+			}
+			
+			$md['build'] = $this->build;
+			update_option("clearskys_dashboard_config",$md);
+		}
+		
+		
+		return $md;
+		
+	}
+	
+	function plugin_init() {
+		// This function is used to setup and declare needed variables
+		// get the current user id and store it for later use
+		$user = wp_get_current_user();
+		$this->uid = (int) $user->id;
 		
 	}
 	
@@ -128,7 +176,7 @@ class CSMyDashboard {
 		// to the relevant user functions
 		if($this->onpage('wp-admin/index.php') && $this->xss_clean($_GET['call']) == '_ajax' && function_exists('current_user_can') && current_user_can('edit_posts')) {
 			
-			if(function_exists('check_admin_referer') && !$this->ajax_nonce_pass('clearskys_dashboard_ajax',$_REQUEST['_wpnonce'])) {
+			if(!$this->bad_karma() && function_exists('check_admin_referer') && !$this->ajax_nonce_pass('clearskys_dashboard_ajax',$_REQUEST['_wpnonce'])) {
 				exit();
 			}
 			
@@ -151,7 +199,7 @@ class CSMyDashboard {
 					break;
 				case "reordercolumn":
 					$tcolumn = $this->xss_clean($_GET['column']);
-					if(isset($mdp['page-1'][$tcolumn]) && count($mdp['page-1'][$tcolumn]) > 0) {
+					if(isset($mdp[$this->uid]['page-1'][$tcolumn]) && count($mdp[$this->uid]['page-1'][$tcolumn]) > 0) {
 						// make sure that the column actually exists and it has
 						// gadgets on it then
 						// create an array of gadget names in the order we want them
@@ -161,7 +209,7 @@ class CSMyDashboard {
 						}
 						$newpagelayout = array();
 						foreach($gadgets as $gad) {
-							foreach($mdp['page-1'][$tcolumn] as $ogadget) {
+							foreach($mdp[$this->uid]['page-1'][$tcolumn] as $ogadget) {
 								if($ogadget['name'] == $gad) {
 									array_push($newpagelayout, $ogadget);
 									break;
@@ -169,7 +217,7 @@ class CSMyDashboard {
 							}
 						}
 						// Store the changes back to the database
-						$mdp['page-1'][$tcolumn] = $newpagelayout;
+						$mdp[$this->uid]['page-1'][$tcolumn] = $newpagelayout;
 						update_option("clearskys_dashboard_pages",$mdp);
 						echo "ok";
 					} else {
@@ -179,7 +227,7 @@ class CSMyDashboard {
 				case "movegadget":
 					$tcolumn = $this->xss_clean($_GET['tocolumn']);
 					$fcolumn = $this->xss_clean($_GET['fromcolumn']);
-					if(isset($mdp['page-1'][$fcolumn]) && isset($mdp['page-1'][$tcolumn]) && (count($mdp['page-1'][$fcolumn]) > 0 || count($mdp['page-1'][$tcolumn]) > 0)) {
+					if(isset($mdp[$this->uid]['page-1'][$fcolumn]) && isset($mdp[$this->uid]['page-1'][$tcolumn]) && (count($mdp[$this->uid]['page-1'][$fcolumn]) > 0 || count($mdp[$this->uid]['page-1'][$tcolumn]) > 0)) {
 						// make sure that the columns exist and that there is actually something to move from one
 						// column to the other.	
 						// Handle the to column first
@@ -196,7 +244,7 @@ class CSMyDashboard {
 									}
 								}
 							}
-							$mdp['page-1'][$tcolumn] = $newpagelayout;
+							$mdp[$this->uid]['page-1'][$tcolumn] = $newpagelayout;
 						}
 						// Now handle the from column first
 						$gadgets = explode('&',$this->xss_clean($_GET['fromgadgets']));
@@ -212,7 +260,7 @@ class CSMyDashboard {
 									}
 								}
 							}
-							$mdp['page-1'][$fcolumn] = $newpagelayout;
+							$mdp[$this->uid]['page-1'][$fcolumn] = $newpagelayout;
 						}
 						update_option("clearskys_dashboard_pages",$mdp);
 						echo "ok";
@@ -226,7 +274,7 @@ class CSMyDashboard {
 						// Check a gadget is passed and that it is active
 						// remove the gadget from the gadget instances
 						unset($this->gadgetinstances[$gadget]);
-						foreach($mdp['page-1'] as $key=>$col) {
+						foreach($mdp[$this->uid]['page-1'] as $key=>$col) {
 							// Go through every column
 							// get the keys for the column
 							// need to do this as removing the first item in an array
@@ -236,7 +284,7 @@ class CSMyDashboard {
 								// go through each gadget in the column
 								if($col[$akeys[$n]]['name'] == $gadget) {
 									// if the gadget is found
-									unset($mdp['page-1'][$key][$akeys[$n]]);
+									unset($mdp[$this->uid]['page-1'][$key][$akeys[$n]]);
 								}
 							}
 						}
@@ -247,16 +295,16 @@ class CSMyDashboard {
 					}
 					break;
 				case "addgadget":
-					if(isset($mdp['page-1'])) {
+					if(isset($mdp[$this->uid]['page-1'])) {
 						// Get the Left hand column
 						$toadd = $this->xss_clean($_GET['gadget']);
 						if($toadd != "") {
 							$toadd = str_replace('addtopage_','',$toadd);
 						}
-						$column =& $this->get_left_column($mdp['page-1']);
+						$column = $this->get_left_column($mdp[$this->uid]['page-1']);
 						$gadget = $this->create_gadget_instance($toadd);
 						if(isset($gadget['name'])) {
-							array_push($column, $gadget);
+							array_push($mdp[$this->uid]['page-1'][$column], $gadget);
 							update_option("clearskys_dashboard_pages",$mdp);
 							//echo $gadget['name'];
 							echo $this->show_gadget_box($gadget['name']);
@@ -323,9 +371,9 @@ class CSMyDashboard {
 		 */
 		$mdp = get_option("clearskys_dashboard_pages");
 		
-		if(count($mdp['page-1']) > 0) {
+		if(count($mdp[$this->uid]['page-1']) > 0) {
 			// columns exist so output them
-			foreach($mdp['page-1'] as $key=>$column) {
+			foreach($mdp[$this->uid]['page-1'] as $key=>$column) {
 				if(count($column) > 0) {
 					// there are gadgets in this box
 					foreach($column as $gadget) {
@@ -342,7 +390,7 @@ class CSMyDashboard {
 	
 	function enqueue_dependancies() {
 		
-		$md = get_option("clearskys_dashboard_config");
+		$md = $this->getpluginoptions();
 		
 		if(($this->onpage('wp-admin/index.php') || $this->onpage('wp-admin/admin.php')) && $this->xss_clean($_GET['page']) == $this->mylocation) {
 			
@@ -360,8 +408,8 @@ class CSMyDashboard {
 			
 		
 			$this->queueCss('mydashboard.css');
-			if(isset($md['skin'])) {
-				$this->queueCss('skins/' . $md['skin'] . '/skin.css');	
+			if(isset($md[$this->uid]['skin'])) {
+				$this->queueCss('skins/' . $md[$this->uid]['skin'] . '/skin.css');	
 			} else {
 				$this->queueCss('skins/default/skin.css');	
 			}
@@ -376,16 +424,17 @@ class CSMyDashboard {
 				echo $value . "\n";
 			}
 		}
-		//print_r($this->availablegadgets);
 	}
 	
 	function add_admin_pages() {
-		add_submenu_page('index.php', 'My Dashboard page', 'My Dashboard', 'read', __FILE__, array(&$this,'show_dashboard'));
+		add_submenu_page('index.php', 'My Dashboard page', 'My Dashboard', 0, __FILE__, array(&$this,'show_dashboard'));
 		add_submenu_page('themes.php', 'My Dashboard settings', 'My Dashboard', 8, __FILE__, array(&$this,'show_dashboard_layout'));
 	}
 	
 	function redirect_index() {
-		if($this->onpage('wp-admin/index.php') && $this->xss_clean($_GET['page']) == '' && $this->xss_clean($_GET['call']) != '_ajax') {
+		$md = $this->getpluginoptions();
+		
+		if($md[$this->uid]['show_original'] == '0' && $this->onpage('wp-admin/index.php') && $this->xss_clean($_GET['page']) == '' && $this->xss_clean($_GET['call']) != '_ajax') {
 			// If the call is for the standard index page and isn't an ajax call
 			Header('Location: index.php?page=' . $this->mylocation);
 		}
@@ -393,54 +442,56 @@ class CSMyDashboard {
 	
 	function steal_dashboardmenu() {
 		global $menu, $submenu;
+		$md = $this->getpluginoptions();
+		
+		if($md[$this->uid]['show_original'] == '0') {
 				
-		if(array_key_exists('index.php',$submenu)) {	
-			
-			// This is all a bit hacky, but we basically perform the following steps
-			
-			// Check if there is a submenu of index - there should be as we added a sub menu item to it
-			if(isset($submenu['index.php'])) {
-				$maindash = -1;
-				for($n=0; $n < count($submenu['index.php']); $n++) {
-					// For each submenu item
-					if($submenu['index.php'][$n][0] == "Dashboard") {
-						// Oooh found the main Dashboard, so hijack it to be the new Dashboard
-						$submenu['index.php'][$n][0] = "My Dashboard";
-						$submenu['index.php'][$n][2] = $this->mylocation;
-						$maindash = $n;
+			if(array_key_exists('index.php',$submenu)) {	
+				
+				// This is all a bit hacky, but we basically perform the following steps
+				
+				// Check if there is a submenu of index - there should be as we added a sub menu item to it
+				if(isset($submenu['index.php'])) {
+					$maindash = -1;
+					for($n=0; $n < count($submenu['index.php']); $n++) {
+						// For each submenu item
+						if($submenu['index.php'][$n][0] == "Dashboard") {
+							// Oooh found the main Dashboard, so hijack it to be the new Dashboard
+							$submenu['index.php'][$n][0] = "My Dashboard";
+							$submenu['index.php'][$n][2] = $this->mylocation;
+							$maindash = $n;
+						}
+						if($submenu['index.php'][$n][0] == "My Dashboard" && $maindash != $n) {
+							// Found our added submenu (that isn't the one we hijacked earlier)
+							// We no longer need it, so remove it.
+							unset($submenu['index.php'][$n]);
+						}
 					}
-					if($submenu['index.php'][$n][0] == "My Dashboard" && $maindash != $n) {
-						// Found our added submenu (that isn't the one we hijacked earlier)
-						// We no longer need it, so remove it.
-						unset($submenu['index.php'][$n]);
-					}
+					
 				}
-				
-			}
-			// Finally after all our messing around, count the number of sub-menus
-			// If there is only one, and it is ours, then we don't really need it, so remove it.
-			if(count($submenu['index.php']) == 1 && $submenu['index.php'][0][0] == "My Dashboard") {
-				unset($submenu['index.php']);
+				// Finally after all our messing around, count the number of sub-menus
+				// If there is only one, and it is ours, then we don't really need it, so remove it.
+				if(count($submenu['index.php']) == 1 && $submenu['index.php'][0][0] == "My Dashboard") {
+					unset($submenu['index.php']);
+				}
 			}
 		}
 
 	}
 	
 	function show_dashboard() {
-		$md = get_option("clearskys_dashboard_config");	
-		
+		$md = $this->getpluginoptions();	
 		// Need to check if the initial page exists, otherwise
 		// this is our first time here, so we need to setup some
 		// default gadgets.
 		
 		$mdp = get_option("clearskys_dashboard_pages");
-		if(!isset($mdp['page-1'])) {
+		if(!isset($mdp[$this->uid]['page-1'])) {
 			// No initial page is built so create a default one
-			$mdp[$md['defaultpage']] = $this->build_default_page($md['layout']['columns'], $md['layout']['style']);
+			$mdp[$this->uid][$md[$this->uid]['defaultpage']] = $this->build_default_page($md[$this->uid]['layout']['columns'], $md[$this->uid]['layout']['style']);
 			update_option("clearskys_dashboard_pages",$mdp);
 		}
-		//print_r($mdp);
-		$layout = $md['layout'];
+		$layout = $md[$this->uid]['layout'];
 		
 		switch($layout['columns']) {
 			case 1:
@@ -474,13 +525,13 @@ class CSMyDashboard {
 		echo 'Loading library...';
 		echo '</div>';
 		
-		echo '<div id="' . $md['defaultpage'] . '" class="mydashpage">';
+		echo '<div id="' . $md[$this->uid]['defaultpage'] . '" class="mydashpage">';
 		
 		// change code here to read the page from the page array
 		
-		if(count($mdp['page-1']) > 0) {
+		if(count($mdp[$this->uid]['page-1']) > 0) {
 			// columns exist so output them
-			foreach($mdp['page-1'] as $key=>$column) {
+			foreach($mdp[$this->uid]['page-1'] as $key=>$column) {
 				
 				echo '<div class="';	
 				if(isset($style)) {
@@ -511,9 +562,6 @@ class CSMyDashboard {
 		
 		echo '</div>';	
 		echo '</div>';
-		//echo "<div class='wrap'>";
-		
-		//echo "</div>";
 	}
 	
 	function show_library() {
@@ -582,49 +630,49 @@ class CSMyDashboard {
 		}
 		
 		// Get the Right hand column
-		$column =& $this->get_right_column($t);
+		$column = $this->get_right_column($t);
 		
 		if($this->gadget_registered('mydash_latest_comments')) {
 			$gadget = $this->create_gadget_instance('mydash_latest_comments');
-			array_push($column, $gadget);
+			array_push($t[$column], $gadget);
 		}
 		if($this->gadget_registered('mydash_latest_posts')) {
 			$gadget = $this->create_gadget_instance('mydash_latest_posts');
-			array_push($column, $gadget);
+			array_push($t[$column], $gadget);
 		}
 		if($this->gadget_registered('mydash_blog_statistics')) {
 			$gadget = $this->create_gadget_instance('mydash_blog_statistics');
-			array_push($column, $gadget);
+			array_push($t[$column], $gadget);
 		}
 		if($this->gadget_registered('mydash_additional_items')) {
 			$gadget = $this->create_gadget_instance('mydash_additional_items');
-			array_push($column, $gadget);
+			array_push($t[$column], $gadget);
 		}
 		
 		// Get the Left hand column
-		$column =& $this->get_left_column($t);
+		$column = $this->get_left_column($t);
 		
 		if($this->gadget_registered('mydash_quick_links')) {
 			$gadget = $this->create_gadget_instance('mydash_quick_links');
-			array_push($column, $gadget);
+			array_push($t[$column], $gadget);
 		}
 		
 		// Get the Middle column
-		$column =& $this->get_middle_column($t);
+		$column = $this->get_middle_column($t);
 		
 		if($this->gadget_registered('mydash_incoming_links')) {
 			$gadget = $this->create_gadget_instance('mydash_incoming_links');
-			array_push($column, $gadget);
+			array_push($t[$column], $gadget);
 		}
 		if($this->gadget_registered('mydash_dev_rss_feed')) {
 			// Wordpress Development blog
 			$gadget = $this->create_gadget_instance('mydash_dev_rss_feed');
-			array_push($column, $gadget);
+			array_push($t[$column], $gadget);
 		}
 		if($this->gadget_registered('mydash_planet_rss_feed')) {
 			// Other Wordpress news
 			$gadget = $this->create_gadget_instance('mydash_planet_rss_feed');
-			array_push($column, $gadget);
+			array_push($t[$column], $gadget);
 		}
 		
 		return $t;
@@ -852,21 +900,19 @@ class CSMyDashboard {
 		
 	}
 	
-	function &get_left_column(&$page) {
+	function get_left_column($page) {
 		// this function will attempt to return the left column, but in a single column layout
 		// it will return the single column instead.	
 		if(isset($page['column-1'])) {
-			return $page['column-1'];
-			//return 'column-1';
+			return 'column-1';
 		}
 	}
 	
-	function &get_middle_column(&$page, $defaultto = 'left') {
+	function get_middle_column($page, $defaultto = 'left') {
 		// this function will attempt to return the middle column, but in a two column layout
 		// will return the left column instead (can be altered by passing 'right' as a parameter)	
 		if(isset($page['column-2'])) {
-			return $page['column-2'];
-			//return 'column-2';
+			return 'column-2';
 		} else {
 			if($defaultto == 'left') {
 				return $this->get_left_column($page);
@@ -876,12 +922,11 @@ class CSMyDashboard {
 		}
 	}
 	
-	function &get_right_column(&$page) {
+	function get_right_column($page) {
 		// this function will attempt to return the right column, but in a single column layout
 		// it will return the single column instead.
 		if(isset($page['column-3'])) {
-			return $page['column-3'];
-			//return 'column-3';
+			return 'column-3';
 		} else {
 			// there isn't a 3rd column, so return the middle column (2) ensuring that
 			// it defaults to returning the left column on single column pages so we don't get
@@ -933,7 +978,7 @@ class CSMyDashboard {
 		// based on the get_themes function from WordPress
 		$skins = array();
 		
-		$md = get_option("clearskys_dashboard_config");
+		$md = $this->getpluginoptions();
 		
 		//$skin_root = ABSPATH . 'wp-content/plugins/mydashboard/styles/skins/';
 		// find all the files in the skins directory
@@ -956,7 +1001,6 @@ class CSMyDashboard {
 						break;
 					}
 				}
-				print_r($skins);
 			}
 		}
 		return $skins;
@@ -967,20 +1011,19 @@ class CSMyDashboard {
 		if ( ! current_user_can('manage_options') )
 			wp_die(__('You are not allowed to modify dashboard options.'));
 		
-		$md = get_option("clearskys_dashboard_config");
+		$md = $this->getpluginoptions();
 		$site_uri = get_settings('siteurl');
 		
-		//print_r($md);
 		if($this->xss_clean($_POST['submitted']) == 'yes') {
 			
 			if(function_exists('check_admin_referer')) {
 				check_admin_referer('clearskys_dashboard_options');
 			}
-			if($this->xss_clean($_POST['show_original']) != $md['show_original']) {
-				$md['show_original'] = $this->xss_clean($_POST['show_original']);
+			if($this->xss_clean($_POST['show_original']) != $md[$this->uid]['show_original']) {
+				$md[$this->uid]['show_original'] = $this->xss_clean($_POST['show_original']);
 			}
-			if($this->xss_clean($_POST['skin']) != $md['skin']) {
-				$md['skin'] = $_POST['skin'];
+			if($this->xss_clean($_POST['skin']) != $md[$this->uid]['skin']) {
+				$md[$this->uid]['skin'] = $this->xss_clean($_POST['skin']);
 			}
 			update_option("clearskys_dashboard_config",$md);
 			echo '<div id="message" class="updated fade"><p><strong>Settings updated.</strong></p></div>';
@@ -1006,8 +1049,8 @@ class CSMyDashboard {
 			<th width="33%" scope="row" valign='top'>Display standard dashboard as well</th> 
 			<td valign='top'>
 				<select name="show_original">
-					<option value="0" <?php if($md['show_original'] == 0) echo 'selected="selected"'; ?>>No</option>
-					<option value="1" <?php if($md['show_original'] == 1) echo 'selected="selected"'; ?>>Yes</option>
+					<option value="0" <?php if($md[$this->uid]['show_original'] == 0) echo 'selected="selected"'; ?>>No</option>
+					<option value="1" <?php if($md[$this->uid]['show_original'] == 1) echo 'selected="selected"'; ?>>Yes</option>
 				</select>
 			<?php //echo htmlspecialchars($cse["enquiry_thankyou"], ENT_QUOTES); ?>
 			</td> 
@@ -1024,7 +1067,7 @@ class CSMyDashboard {
 							$skinfile = $skin_root . $skins[$n] . '/skin.css';
 							$tskin = $this->get_skin_data($skinfile);
 							echo '<option value="' . $skins[$n] . '"';
-							if($md['skin'] == $skins[$n]) echo ' selected="selected"';
+							if($md[$this->uid]['skin'] == $skins[$n]) echo ' selected="selected"';
 							echo '>';
 							echo $tskin['Name'];
 							echo '</option>';
@@ -1102,8 +1145,6 @@ class CSMyDashboard {
 		 
 		 $this->availablegadgets[$name] = $options;
 		 
-		 //print_r($this->availablegadgets);
-		 
 	}
 	
 	function register_column($name, $page = "page-1") {
@@ -1127,220 +1168,7 @@ class CSMyDashboard {
 		
 	}
 	
-	/* Functions to handle script cleaning - provided thanks to Codeigniter */
-	function xss_clean($str, $charset = 'ISO-8859-1')
-		{	
-			/*
-			 * Remove Null Characters
-			 *
-			 * This prevents sandwiching null characters
-			 * between ascii characters, like Java\0script.
-			 *
-			 */
-			$str = preg_replace('/\0+/', '', $str);
-			$str = preg_replace('/(\\\\0)+/', '', $str);
 	
-			/*
-			 * Validate standard character entities
-			 *
-			 * Add a semicolon if missing.  We do this to enable
-			 * the conversion of entities to ASCII later.
-			 *
-			 */
-			$str = preg_replace('#(&\#*\w+)[\x00-\x20]+;#u',"\\1;",$str);
-			
-			/*
-			 * Validate UTF16 two byte encoding (x00)
-			 *
-			 * Just as above, adds a semicolon if missing.
-			 *
-			 */
-			$str = preg_replace('#(&\#x*)([0-9A-F]+);*#iu',"\\1\\2;",$str);
-	
-			/*
-			 * URL Decode
-			 *
-			 * Just in case stuff like this is submitted:
-			 *
-			 * <a href="http://%77%77%77%2E%67%6F%6F%67%6C%65%2E%63%6F%6D">Google</a>
-			 *
-			 * Note: Normally urldecode() would be easier but it removes plus signs
-			 *
-			 */	
-			$str = preg_replace("/%u0([a-z0-9]{3})/i", "&#x\\1;", $str);
-			$str = preg_replace("/%([a-z0-9]{2})/i", "&#x\\1;", $str);		
-					
-			/*
-			 * Convert character entities to ASCII
-			 *
-			 * This permits our tests below to work reliably.
-			 * We only convert entities that are within tags since
-			 * these are the ones that will pose security problems.
-			 *
-			 */
-			
-			if (preg_match_all("/<(.+?)>/si", $str, $matches))
-			{		
-				for ($i = 0; $i < count($matches['0']); $i++)
-				{
-					$str = str_replace($matches['1'][$i],
-										$this->_html_entity_decode($matches['1'][$i], $charset),
-										$str);
-				}
-			}
-		
-			/*
-			 * Convert all tabs to spaces
-			 *
-			 * This prevents strings like this: ja	vascript
-			 * Note: we deal with spaces between characters later.
-			 *
-			 */		
-			$str = preg_replace("#\t+#", " ", $str);
-		
-			/*
-			 * Makes PHP tags safe
-			 *
-			 *  Note: XML tags are inadvertently replaced too:
-			 *
-			 *	<?xml
-			 *
-			 * But it doesn't seem to pose a problem.
-			 *
-			 */		
-			$str = str_replace(array('<?php', '<?PHP', '<?', '?>'),  array('&lt;?php', '&lt;?PHP', '&lt;?', '?&gt;'), $str);
-		
-			/*
-			 * Compact any exploded words
-			 *
-			 * This corrects words like:  j a v a s c r i p t
-			 * These words are compacted back to their correct state.
-			 *
-			 */		
-			$words = array('javascript', 'vbscript', 'script', 'applet', 'alert', 'document', 'write', 'cookie', 'window');
-			foreach ($words as $word)
-			{
-				$temp = '';
-				for ($i = 0; $i < strlen($word); $i++)
-				{
-					$temp .= substr($word, $i, 1)."\s*";
-				}
-				
-				$temp = substr($temp, 0, -3);
-				$str = preg_replace('#'.$temp.'#s', $word, $str);
-				$str = preg_replace('#'.ucfirst($temp).'#s', ucfirst($word), $str);
-			}
-		
-			/*
-			 * Remove disallowed Javascript in links or img tags
-			 */		
-			 $str = preg_replace("#<a.+?href=.*?(alert\(|alert&\#40;|javascript\:|window\.|document\.|\.cookie|<script|<xss).*?\>.*?</a>#si", "", $str);
-			 $str = preg_replace("#<img.+?src=.*?(alert\(|alert&\#40;|javascript\:|window\.|document\.|\.cookie|<script|<xss).*?\>#si", "", $str);
-			 $str = preg_replace("#<(script|xss).*?\>#si", "", $str);
-	
-			/*
-			 * Remove JavaScript Event Handlers
-			 *
-			 * Note: This code is a little blunt.  It removes
-			 * the event handler and anything up to the closing >,
-			 * but it's unlikely to be a problem.
-			 *
-			 */		
-			 $str = preg_replace('#(<[^>]+.*?)(onblur|onchange|onclick|onfocus|onload|onmouseover|onmouseup|onmousedown|onselect|onsubmit|onunload|onkeypress|onkeydown|onkeyup|onresize)[^>]*>#iU',"\\1>",$str);
-		
-			/*
-			 * Sanitize naughty HTML elements
-			 *
-			 * If a tag containing any of the words in the list
-			 * below is found, the tag gets converted to entities.
-			 *
-			 * So this: <blink>
-			 * Becomes: &lt;blink&gt;
-			 *
-			 */		
-			$str = preg_replace('#<(/*\s*)(alert|applet|basefont|base|behavior|bgsound|blink|body|embed|expression|form|frameset|frame|head|html|ilayer|iframe|input|layer|link|meta|object|plaintext|style|script|textarea|title|xml|xss)([^>]*)>#is', "&lt;\\1\\2\\3&gt;", $str);
-			
-			/*
-			 * Sanitize naughty scripting elements
-			 *
-			 * Similar to above, only instead of looking for
-			 * tags it looks for PHP and JavaScript commands
-			 * that are disallowed.  Rather than removing the
-			 * code, it simply converts the parenthesis to entities
-			 * rendering the code un-executable.
-			 *
-			 * For example:	eval('some code')
-			 * Becomes:		eval&#40;'some code'&#41;
-			 *
-			 */
-			$str = preg_replace('#(alert|cmd|passthru|eval|exec|system|fopen|fsockopen|file|file_get_contents|readfile|unlink)(\s*)\((.*?)\)#si', "\\1\\2&#40;\\3&#41;", $str);
-							
-			/*
-			 * Final clean up
-			 *
-			 * This adds a bit of extra precaution in case
-			 * something got through the above filters
-			 *
-			 */	
-			$bad = array(
-							'document.cookie'	=> '',
-							'document.write'	=> '',
-							'window.location'	=> '',
-							"javascript\s*:"	=> '',
-							"Redirect\s+302"	=> '',
-							'<!--'				=> '&lt;!--',
-							'-->'				=> '--&gt;'
-						);
-		
-			foreach ($bad as $key => $val)
-			{
-				$str = preg_replace("#".$key."#i", $val, $str);
-			}
-			
-							
-			return $str;
-		}
-		
-		function _html_entity_decode($str, $charset='ISO-8859-1')
-		{
-			if (stristr($str, '&') === FALSE) return $str;
-		
-			// The reason we are not using html_entity_decode() by itself is because
-			// while it is not technically correct to leave out the semicolon
-			// at the end of an entity most browsers will still interpret the entity
-			// correctly.  html_entity_decode() does not convert entities without
-			// semicolons, so we are left with our own little solution here. Bummer.
-		
-			if (function_exists('html_entity_decode') && (strtolower($charset) != 'utf-8' OR version_compare(phpversion(), '5.0.0', '>=')))
-			{
-				$str = html_entity_decode($str, ENT_COMPAT, $charset);
-				$str = preg_replace('~&#x([0-9a-f]{2,5})~ei', 'chr(hexdec("\\1"))', $str);
-				return preg_replace('~&#([0-9]{2,4})~e', 'chr(\\1)', $str);
-			}
-			
-			// Numeric Entities
-			$str = preg_replace('~&#x([0-9a-f]{2,5});{0,1}~ei', 'chr(hexdec("\\1"))', $str);
-			$str = preg_replace('~&#([0-9]{2,4});{0,1}~e', 'chr(\\1)', $str);
-		
-			// Literal Entities - Slightly slow so we do another check
-			if (stristr($str, '&') === FALSE)
-			{
-				$str = strtr($str, array_flip(get_html_translation_table(HTML_ENTITIES)));
-			}
-			
-			return $str;
-		}
-		
-		function is_malicious($input) {
-			$is_m = false;
-			$bad_inputs = array("\r", "\n", "mime-version", "content-type", "cc:", "to:");
-			foreach($bad_inputs as $bad_input) {
-				if(strpos(strtolower($input), strtolower($bad_input)) !== false) {
-					$is_m = true; break;
-				}
-			}
-			return $is_m;
-		}
 }
 
 function register_mydashboard_gadget($name, $options = array(), $type = 'standard') {

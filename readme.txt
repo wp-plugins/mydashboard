@@ -3,8 +3,8 @@ Contributors: clearskysnet
 Donate link: http://blog.clearskys.net/donations/
 Tags: dashboard, ajax, admin
 Requires at least: 2.2.0
-Tested up to: 2.2.1
-Stable tag: 0.2.6
+Tested up to: 2.3.0
+Stable tag: 0.3.1
 
 This plugin replaces the existing WordPress dashboard with an ajax homepage style of dashboard.
 
