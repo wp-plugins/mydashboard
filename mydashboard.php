@@ -3,7 +3,7 @@
 Plugin Name: MyDashboard
 Plugin URI: http://dev.clearskys.net/Wordpress/MyDashboard
 Description: This plugin provides a replacement ajax based Dashboard for WordPress.
-Version: 0.3.1
+Version: 0.3.1a
 Author: clearskys.net
 Author URI: http://blog.clearskys.net
 */
